@@ -4,7 +4,7 @@ import tensorflow as tf
 import numpy as np
 from PIL import Image
 import os
-from pathlib import Path
+import gdown
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -52,110 +52,60 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-#  CACHE & MODEL FUNCTIONS 
+# CLASS NAMES (hardcoded - no dataset needed)
+CLASS_NAMES = ['Early_Blight', 'Late_Blight', 'Healthy']
+
+# CACHE & MODEL FUNCTIONS
 @st.cache_resource
-def load_or_train_model(data_dir):
-    """Load pre-trained model or train a new one if not available"""
+def load_model():
+    """Load pre-trained model from file or Google Drive"""
     model_path = "potato_disease_model.h5"
     
-    # Check if model exists
+    # Check if model exists locally
     if os.path.exists(model_path):
         try:
             model = tf.keras.models.load_model(model_path)
+            st.success("✅ Model loaded successfully!")
             return model
-        except:
-            st.warning("Could not load existing model. Training new model...")
-    
-    # If model doesn't exist or failed to load, train a new one
-    st.info(" Training model from dataset... This may take a few minutes.")
-    
-    with st.spinner("Training in progress..."):
-        # Load datasets from directory
-        IMG_SIZE = 256
-        BATCH_SIZE = 32
+        except Exception as e:
+            st.error(f"Error loading model: {e}")
+            return None
+    else:
+        st.error(f"❌ Model file not found: {model_path}")
+        st.info("""
+        📌 **To use this app:**
+        1. Train your model locally using the dataset
+        2. Save the trained model as `potato_disease_model.h5`
+        3. Upload the model file to your GitHub repository
+        4. Deploy to Streamlit Cloud
         
-        # Create train dataset
-        train_ds = tf.keras.utils.image_dataset_from_directory(
-            data_dir,
-            validation_split=0.2,
-            subset="training",
-            seed=123,
-            image_size=(IMG_SIZE, IMG_SIZE),
-            batch_size=BATCH_SIZE,
-            label_mode='categorical'
-        )
-        # Store class names immediately — accessing `class_names` after
-        # .prefetch() or other dataset transformations can fail because
-        # those return a Dataset wrapper that doesn't preserve the
-        # .class_names attribute.
-        class_names = train_ds.class_names
+        **Alternative:** Upload model to Google Drive and use the download option below.
+        """)
         
-        # Create validation dataset
-        val_ds = tf.keras.utils.image_dataset_from_directory(
-            data_dir,
-            validation_split=0.2,
-            subset="validation",
-            seed=123,
-            image_size=(IMG_SIZE, IMG_SIZE),
-            batch_size=BATCH_SIZE,
-            label_mode='categorical'
+        # Optional: Download from Google Drive
+        gdrive_url = st.text_input(
+            "Or paste Google Drive share link to download model:",
+            help="Make sure the file is publicly accessible"
         )
         
-        # Normalize images
-        normalization_layer = tf.keras.layers.Rescaling(1./255)
-        train_ds = train_ds.map(lambda x, y: (normalization_layer(x), y))
-        val_ds = val_ds.map(lambda x, y: (normalization_layer(x), y))
+        if gdrive_url and st.button("Download Model"):
+            try:
+                with st.spinner("Downloading model..."):
+                    # Extract file ID from Google Drive URL
+                    if 'drive.google.com' in gdrive_url:
+                        file_id = gdrive_url.split('/d/')[1].split('/')[0]
+                        download_url = f'https://drive.google.com/uc?id={file_id}'
+                        gdown.download(download_url, model_path, quiet=False)
+                        model = tf.keras.models.load_model(model_path)
+                        st.success("✅ Model downloaded and loaded!")
+                        st.rerun()
+                        return model
+            except Exception as e:
+                st.error(f"Download failed: {e}")
         
-        # Prefetch for performance
-        train_ds = train_ds.prefetch(buffer_size=tf.data.AUTOTUNE)
-        val_ds = val_ds.prefetch(buffer_size=tf.data.AUTOTUNE)
-        
-        # Build CNN model
-        num_classes = len(class_names)
+        return None
 
-        model = tf.keras.Sequential([
-            tf.keras.layers.Conv2D(32, (3, 3), activation='relu', input_shape=(IMG_SIZE, IMG_SIZE, 3)),
-            tf.keras.layers.MaxPooling2D((2, 2)),
-            tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
-            tf.keras.layers.MaxPooling2D((2, 2)),
-            tf.keras.layers.Conv2D(128, (3, 3), activation='relu'),
-            tf.keras.layers.MaxPooling2D((2, 2)),
-            tf.keras.layers.Conv2D(128, (3, 3), activation='relu'),
-            tf.keras.layers.MaxPooling2D((2, 2)),
-            tf.keras.layers.Flatten(),
-            tf.keras.layers.Dense(512, activation='relu'),
-            tf.keras.layers.Dropout(0.5),
-            tf.keras.layers.Dense(num_classes, activation='softmax')
-        ])
-
-        model.compile(
-            optimizer='adam',
-            loss=tf.keras.losses.CategoricalCrossentropy(),
-            metrics=['accuracy']
-        )
-
-        # Train model
-        history = model.fit(
-            train_ds,
-            validation_data=val_ds,
-            epochs=15,
-            verbose=0
-        )
-
-        # Save model
-        model.save(model_path)
-        st.success(" Model trained and saved successfully!")
-    
-    return model
-
-@st.cache_resource
-def get_class_names(data_dir):
-    """Get class names from dataset directory"""
-    class_names = sorted([d for d in os.listdir(data_dir) 
-                         if os.path.isdir(os.path.join(data_dir, d))])
-    return class_names
-
-def predict_image(image, model, class_names):
+def predict_image(image, model):
     """Make prediction on uploaded image"""
     # Prepare image
     img_array = tf.keras.preprocessing.image.img_to_array(image)
@@ -164,7 +114,7 @@ def predict_image(image, model, class_names):
     
     # Make prediction
     predictions = model.predict(img_array, verbose=0)
-    predicted_class = class_names[np.argmax(predictions[0])]
+    predicted_class = CLASS_NAMES[np.argmax(predictions[0])]
     confidence = float(np.max(predictions[0])) * 100
     
     return predicted_class, confidence, predictions[0]
@@ -178,17 +128,17 @@ def get_disease_info(disease_name):
             'emoji': '🌱',
             'details': 'No disease detected. Continue with regular care and monitoring.'
         },
-        'Early Blight': {
+        'Early_Blight': {
             'description': '⚠️ Early Blight Detected',
             'color': 'early-blight',
             'emoji': '🍂',
-            'details': 'Early blight is a fungal disease. Apply fungicides and remove affected leaves. Ensure good air circulation.'
+            'details': 'Early blight is a fungal disease caused by Alternaria solani. Apply fungicides and remove affected leaves. Ensure good air circulation.'
         },
-        'Late Blight': {
+        'Late_Blight': {
             'description': '🚨 Late Blight Detected',
             'color': 'late-blight',
             'emoji': '❌',
-            'details': 'Late blight is a serious fungal disease. Apply appropriate fungicides immediately. Increase plant spacing for better air flow.'
+            'details': 'Late blight is a serious fungal disease caused by Phytophthora infestans. Apply appropriate fungicides immediately. Increase plant spacing for better air flow.'
         }
     }
     return disease_info.get(disease_name, {
@@ -198,7 +148,7 @@ def get_disease_info(disease_name):
         'details': 'Classification not recognized.'
     })
 
-#  MAIN APP 
+# MAIN APP
 def main():
     # Header
     st.markdown('<div class="main-header">🥔 Potato Leaf Disease Classifier</div>', 
@@ -206,47 +156,18 @@ def main():
     st.markdown('<div class="sub-header">Identify diseases in potato plants using AI</div>', 
                 unsafe_allow_html=True)
     
-    # Sidebar
-    st.sidebar.title(" Configuration")
+    # Load model
+    model = load_model()
     
-    # Data directory input
-    data_dir = st.sidebar.text_input(
-        " Dataset Directory Path",
-        value="./potato_dataset",
-        help="Path containing 'healthy', 'early_blight', and 'late_blight' folders"
-    )
-    
-    # Verify directory exists
-    if not os.path.isdir(data_dir):
-        st.error(f"❌ Dataset directory not found: {data_dir}")
-        st.info("📌 Please ensure your dataset is organized as:\n"
-                "```\n"
-                "potato_dataset/\n"
-                "├── healthy/\n"
-                "├── early_blight/\n"
-                "└── late_blight/\n"
-                "```")
-        return
-    
-    # Load class names
-    try:
-        class_names = get_class_names(data_dir)
-    except Exception as e:
-        st.error(f"Error reading dataset: {e}")
-        return
-    
-    # Load or train model
-    try:
-        model = load_or_train_model(data_dir)
-    except Exception as e:
-        st.error(f"Error loading/training model: {e}")
+    if model is None:
+        st.warning("⚠️ Please load a model to continue.")
         return
     
     # Main content area
     col1, col2 = st.columns([1, 1], gap="large")
     
     with col1:
-        st.subheader(" Upload Image", divider="green")
+        st.subheader("📸 Upload Image", divider="green")
         
         uploaded_file = st.file_uploader(
             "Choose a potato leaf image",
@@ -263,14 +184,14 @@ def main():
             image_resized = image.resize((256, 256))
             
             # Make prediction
-            with st.spinner(" Analyzing leaf..."):
+            with st.spinner("🔍 Analyzing leaf..."):
                 predicted_class, confidence, all_predictions = predict_image(
-                    image_resized, model, class_names
+                    image_resized, model
                 )
             
             # Display results in second column
             with col2:
-                st.subheader(" Results", divider="green")
+                st.subheader("📊 Results", divider="green")
                 
                 # Get disease information
                 disease_info = get_disease_info(predicted_class)
@@ -287,19 +208,19 @@ def main():
                 """, unsafe_allow_html=True)
                 
                 # Show all predictions
-                st.write("###  All Predictions")
+                st.write("### 📈 All Predictions")
                 pred_df = {
-                    'Class': class_names,
+                    'Class': CLASS_NAMES,
                     'Confidence': [f"{conf*100:.2f}%" for conf in all_predictions]
                 }
                 st.dataframe(pred_df, use_container_width=True)
         else:
             with col2:
-                st.info(" Upload an image to see predictions")
+                st.info("👈 Upload an image to see predictions")
     
     # Additional info section
     st.divider()
-    st.subheader(" About This Classifier")
+    st.subheader("📚 About This Classifier")
     
     info_col1, info_col2, info_col3 = st.columns(3)
     
